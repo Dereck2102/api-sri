@@ -33,9 +33,9 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-GitHub Actions ejecuta estas pruebas en las solicitudes de incorporación a `main` y en los cambios enviados a esa rama. Usa ramas de trabajo y solicitudes de incorporación; antes del primer commit, comprueba que `.env`, `.venv/` y `data/` no aparecen entre los archivos preparados. `.env.example` contiene únicamente valores de ejemplo.
+GitHub Actions ejecuta pruebas y comprobación de sintaxis en solicitudes de incorporación y cambios enviados a `DEV` y `main`; este workflow no despliega la aplicación. Usa `DEV` para desarrollo y validación, y reserva `main` para producción tras revisión. Antes de confirmar cambios, comprueba que `.env`, `.venv/` y `data/` no aparecen entre los archivos preparados. `.env.example` contiene únicamente valores de ejemplo.
 
-En esta primera etapa, `main` es la única rama y será la línea de producción cuando la aplicación se publique. Todavía no se crean ramas, entornos de GitHub ni despliegues separados de QA o Producción; se añadirán después de que la aplicación esté publicada desde `main`. La verificación CI no equivale a un entorno QA. Al crear el repositorio, configura protección de `main` para exigir solicitudes de incorporación y que pase la comprobación CI.
+`DEV` es la rama de desarrollo; no debe publicar datos ni secretos de producción. `main` queda reservada para producción, pero no hay despliegue automático configurado. QA y los despliegues separados se definirán más adelante. La verificación CI no equivale a un entorno QA. Configura protección de `DEV` y `main` para exigir revisión y que pase CI antes de integrar cambios.
 
 ## Rutas
 
