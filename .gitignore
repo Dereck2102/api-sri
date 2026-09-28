@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+/data/
+.vs/
+.idea/
+.github/copilot-instructions.md
+VISUAL-STUDIO.md
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
