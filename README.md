@@ -24,6 +24,8 @@ uvicorn app.main:app --reload
 
 Documentación interactiva: `http://127.0.0.1:8000/docs`.
 
+El alcance de desarrollo para Workers/D1 y las mediciones locales del catastro de Pichincha están en [docs/cloudflare-pilot.md](docs/cloudflare-pilot.md). No existe aún un despliegue de Workers ni una base D1 de la aplicación.
+
 ## Verificación y GitHub
 
 Instala las dependencias de desarrollo y ejecuta las pruebas antes de proponer cambios:
