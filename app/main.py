@@ -1,28 +1,23 @@
 from __future__ import annotations
 
-import asyncio
 import os
 import re
-import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from app import store
+from app.security import require_ruc_read
 from app.sources import sri_live
 
 SRI_DATASET_URL = "https://www.sri.gob.ec/datasets"
 SCVS_URL = "https://mercadodevalores.supercias.gob.ec/reportes/directorioCompanias.jsf"
-LIVE_CACHE: dict[str, tuple[float, dict[str, Any] | None]] = {}
-LIVE_CACHE_LOCK = asyncio.Lock()
-
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     store.initialize()
@@ -36,25 +31,11 @@ app = FastAPI(
         "Consulta de RUC con procedencia por campo. El estado tributario del SRI "
         "y la situación legal societaria de la SCVS se reportan por separado."
     ),
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
     lifespan=lifespan,
 )
-
-
-async def get_live(ruc: str) -> dict[str, Any] | None:
-    ttl = max(0, int(os.getenv("SRI_CACHE_TTL_SECONDS", "180")))
-    now = time.monotonic()
-    async with LIVE_CACHE_LOCK:
-        entry = LIVE_CACHE.get(ruc)
-        if entry and now - entry[0] < ttl:
-            return entry[1]
-    result = await sri_live.lookup(ruc)
-    async with LIVE_CACHE_LOCK:
-        LIVE_CACHE[ruc] = (time.monotonic(), result)
-        if len(LIVE_CACHE) > 2048:
-            oldest = sorted(LIVE_CACHE, key=lambda key: LIVE_CACHE[key][0])[:256]
-            for key in oldest:
-                LIVE_CACHE.pop(key, None)
-    return result
 
 
 def observation(value: Any, source_id: str, authority: str, url: str,
@@ -114,7 +95,7 @@ def health() -> dict[str, str]:
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
 
 
-@app.get("/api/v1/sources")
+@app.get("/api/v1/sources", dependencies=[Depends(require_ruc_read)])
 def list_sources() -> dict[str, Any]:
     synced = {row["source_id"]: row for row in store.sources_state()}
     sri_state = synced.get("sri_ruc_snapshot", {})
@@ -124,10 +105,10 @@ def list_sources() -> dict[str, Any]:
             {
                 "source_id": "sri_ruc_live",
                 "authority": "sri",
-                "role": "Estado y datos tributarios consultados en vivo",
+                "role": "Fuente consultable solo por acción manual autorizada",
                 "url": sri_live.SRI_URL,
-                "delivery": "public_web_query",
-                "status": "on_demand",
+                "delivery": "operator_action_only",
+                "status": "manual_only",
             },
             {
                 "source_id": "sri_ruc_snapshot",
@@ -162,46 +143,29 @@ def list_sources() -> dict[str, Any]:
     }
 
 
-@app.get("/api/v1/ruc/{ruc}")
+@app.get("/api/v1/ruc/{ruc}", dependencies=[Depends(require_ruc_read)])
 async def get_ruc(ruc: str) -> dict[str, Any]:
     if not re.fullmatch(r"\d{13}", ruc):
         raise HTTPException(status_code=422, detail="El RUC debe contener exactamente 13 dígitos.")
 
     warnings: list[str] = []
     stale_sources: list[str] = []
-    live: dict[str, Any] | None = None
-    live_error: str | None = None
-    try:
-        live = await get_live(ruc)
-    except sri_live.SRIUnavailable as exc:
-        live_error = str(exc)
-        warnings.append(live_error)
-
-    # A definitive live SRI response with no match must not be overwritten by
-    # an older snapshot.
-    if live is None and live_error is None:
-        raise HTTPException(status_code=404, detail="El SRI no encontró ese RUC en la consulta pública.")
-
-    snapshot = store.sri_snapshot(ruc) if live is None else None
+    manual_result = store.manual_ruc_result(ruc)
+    snapshot = store.sri_snapshot(ruc)
     company = store.scvs_snapshot(ruc)
-    sri_record = live or snapshot
+    sri_record = manual_result or snapshot
 
     if sri_record is None and company is None:
-        raise HTTPException(
-            status_code=503,
-            detail="El SRI no está disponible y no hay un respaldo local para este RUC.",
-        )
+        raise HTTPException(status_code=404, detail="No hay datos disponibles en los snapshots activos para este RUC.")
 
     record: dict[str, Any] = {"ruc": ruc}
     if sri_record:
-        is_live = live is not None
-        source_id = "sri_ruc_live" if is_live else "sri_ruc_snapshot"
+        is_manual = manual_result is not None
+        source_id = sri_record.get("source_id", "sri_ruc_live" if is_manual else "sri_ruc_snapshot")
         source_url = sri_record.get("source_url", SRI_DATASET_URL)
         observed_at = sri_record.get("observed_at")
-        as_of = None if is_live else (
-            sri_record.get("source_updated_at") or sri_record.get("source_period")
-        )
-        freshness = "live" if is_live else _snapshot_freshness(
+        as_of = sri_record.get("source_updated_at") or sri_record.get("source_period")
+        freshness = sri_record.get("freshness", "unknown") if is_manual else _snapshot_freshness(
             sri_record.get("source_updated_at"), sri_record.get("observed_at"), sri_record.get("source_period")
         )
         if freshness == "stale":
@@ -221,7 +185,7 @@ async def get_ruc(ruc: str) -> dict[str, Any]:
         }
         for public_field, source_field in sri_fields.items():
             item = observation(
-                sri_record.get(source_field), "sri_ruc_live" if is_live else source_id,
+                sri_record.get(source_field), source_id,
                 "sri", source_url, observed_at, as_of, freshness,
             )
             if item:
@@ -262,7 +226,7 @@ async def get_ruc(ruc: str) -> dict[str, Any]:
         })
 
     corroborated_fields = ["legal_name"] if sri_name and scvs_name and not conflicts else []
-    if live:
+    if manual_result:
         quality_status = "conflict" if conflicts else ("multi_authority" if company else "single_authority")
     elif sri_record and company:
         quality_status = "conflict" if conflicts else "snapshot_cross_checked"
@@ -271,7 +235,7 @@ async def get_ruc(ruc: str) -> dict[str, Any]:
     else:
         quality_status = "unavailable"
 
-    if snapshot and live_error:
+    if snapshot and not manual_result and freshness == "stale":
         warnings.append("Se usó el conjunto descargable del SRI como respaldo; puede estar desactualizado.")
     if stale_sources:
         warnings.append("Hay snapshots antiguos: " + ", ".join(stale_sources) + ".")
