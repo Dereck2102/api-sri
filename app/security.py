@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 
 from app import store
 
@@ -23,7 +23,10 @@ def token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def require_ruc_read(authorization: str | None = Header(default=None)) -> IntegrationPrincipal:
+def require_ruc_read(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> IntegrationPrincipal:
     if not authorization or len(authorization) > 512:
         raise _unauthorized()
     scheme, separator, token = authorization.partition(" ")
@@ -59,13 +62,15 @@ def require_ruc_read(authorization: str | None = Header(default=None)) -> Integr
     if "ruc:read" not in permissions:
         raise HTTPException(status_code=403, detail="La integración no tiene permiso para consultar RUC.")
 
-    return IntegrationPrincipal(
+    principal = IntegrationPrincipal(
         organization_id=credential["organization_id"],
         integration_id=credential["integration_id"],
         permissions=permissions,
         requests_per_minute=credential["requests_per_minute"],
         daily_limit=credential["daily_limit"],
     )
+    request.state.integration_principal = principal
+    return principal
 
 
 def _unauthorized() -> HTTPException:
